@@ -1,0 +1,207 @@
+service: sls-test-task-api
+
+custom:
+  secrets: ${file(secrets.json)}
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: us-east-1
+  environment:
+    JWT_SECRET: ${self:custom.secrets.JWT_SECRET}
+    AWS_ID: ${self:custom.secrets.AWS_ID}
+    SQS_QUEUE_URL: ${self:custom.secrets.SQS_QUEUE_URL}
+    EMAIL_FROM: ${self:custom.secrets.EMAIL_FROM}
+    BASE_URL: ${self:custom.secrets.BASE_URL}
+
+plugins:
+  - serverless-iam-roles-per-function
+  - serverless-plugin-typescript
+  - serverless-offline
+
+functions:
+  verify-token:
+    handler: functions/authorize.handler
+  ttl-detector:
+    handler: functions/ttlDetector.handler
+    events:
+      - stream:
+          type: dynamodb
+          arn:
+            Fn::GetAtt:
+              - linksTable
+              - StreamArn
+          batchSize: 10
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - 'dynamodb:*'
+          - 'sqs:*'
+        Resource: '*'
+  queue-receiver:
+    handler: functions/queueReceiver.handler
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - ShortlinkerQueue
+              - Arn
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - 'dynamodb:*'
+          - 'sqs:*'
+          - 'ses:*'
+        Resource: '*'
+  short-link:
+    handler: functions/shortLink.handler
+    events:
+      - http:
+          path: /{urlId}
+          method: get
+          cors: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - 'dynamodb:*'
+          - 'sqs:*'
+        Resource:
+          - !GetAtt usersTable.Arn
+          - !GetAtt linksTable.Arn
+          - !GetAtt ShortlinkerQueue.Arn
+  deactivate-link:
+    handler: functions/deactivateLink.handler
+    events:
+      - http:
+          path: deactivate/{urlId}
+          method: delete
+          cors: true
+          authorizer:
+            name: verify-token
+            identitySource: method.request.header.Authorization
+            resultTtlInSeconds: 3600
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - 'dynamodb:*'
+          - 'sqs:*'
+          - 'ses:*'
+        Resource:
+          - !GetAtt usersTable.Arn
+          - !GetAtt linksTable.Arn
+          - !GetAtt ShortlinkerQueue.Arn
+  create-link:
+    handler: functions/createLink.handler
+    events:
+      - http:
+          path: create-link
+          method: post
+          cors: true
+          authorizer:
+            name: verify-token
+            identitySource: method.request.header.Authorization
+            resultTtlInSeconds: 3600
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - 'dynamodb:GetItem'
+          - 'dynamodb:PutItem'
+          - 'dynamodb:UpdateItem'
+        Resource:
+          - !GetAtt usersTable.Arn
+          - !GetAtt linksTable.Arn
+  me:
+    handler: functions/me.handler
+    events:
+      - http:
+          path: me
+          method: get
+          cors: true
+          authorizer:
+            name: verify-token
+            identitySource: method.request.header.Authorization
+            resultTtlInSeconds: 3600
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - 'dynamodb:*'
+        Resource:
+          - !GetAtt usersTable.Arn
+          - !GetAtt linksTable.Arn
+  login:
+    handler: functions/login.handler
+    events:
+      - http:
+          path: login
+          method: post
+          cors: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - 'dynamodb:PutItem'
+          - 'dynamodb:GetItem'
+        Resource:
+          - !GetAtt usersTable.Arn
+          - !GetAtt linksTable.Arn
+  register:
+    handler: functions/register.handler
+    events:
+      - http:
+          path: register
+          method: post
+          cors: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - 'dynamodb:PutItem'
+          - 'dynamodb:GetItem'
+        Resource:
+          - !GetAtt usersTable.Arn
+          - !GetAtt linksTable.Arn
+resources:
+  Resources:
+    ShortlinkerQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: shortlinker-queue
+    usersTable:
+      Type: AWS::DynamoDB::GlobalTable
+      Properties:
+        TableName: users-table
+        BillingMode: PAY_PER_REQUEST
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+        Replicas:
+          - Region: us-east-1
+        AttributeDefinitions:
+          - AttributeName: pk
+            AttributeType: S
+          - AttributeName: sk
+            AttributeType: S
+        KeySchema:
+          - AttributeName: pk
+            KeyType: HASH
+          - AttributeName: sk
+            KeyType: RANGE
+    linksTable:
+      Type: AWS::DynamoDB::GlobalTable
+      Properties:
+        TableName: links-table
+        BillingMode: PAY_PER_REQUEST
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+        Replicas:
+          - Region: us-east-1
+        AttributeDefinitions:
+          - AttributeName: pk
+            AttributeType: S
+          - AttributeName: sk
+            AttributeType: S
+        KeySchema:
+          - AttributeName: pk
+            KeyType: HASH
+          - AttributeName: sk
+            KeyType: RANGE
+        TimeToLiveSpecification:
+          AttributeName: ttl
+          Enabled: true

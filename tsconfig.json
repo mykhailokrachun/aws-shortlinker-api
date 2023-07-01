@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "types": ["node"],
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "target": "ES5",
+    "moduleDetection": "force"
+  },
+  "compileOnSave": true
+}
