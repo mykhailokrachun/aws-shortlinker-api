@@ -2,8 +2,6 @@
 
 Project showcases AWS-native link shortener service. User can register or log in and after that provide any link and expire date and receive shortened version of it that will expire according to request (after visit, in 1 day, in 3 days or in 7 days). After expiration of link, user, who created this link, will receive email notification (to test this both email of sender and email of receiver must be verified on AWS SES).
 
-To test API you can visit [this link](https://mykhailokrachun.github.io/sls-test-docs/)
-
 ## Project structure
 
 - [serverless.yaml](serverless.yaml) - The AWS Serverless template, a descriptor of an AWS Serverless application
