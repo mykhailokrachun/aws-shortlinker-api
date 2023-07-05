@@ -1,4 +1,4 @@
-const { getUserFromToken } = require('../lib/utils');
+const { getUserFromToken, createResponse } = require('../lib/utils');
 const { marshall, unmarshall } = require('@aws-sdk/util-dynamodb');
 const { ScanCommand } = require('@aws-sdk/client-dynamodb');
 const db = require('../lib/db');
@@ -30,9 +30,8 @@ module.exports.handler = async function (event) {
     };
   });
 
-  return {
-    statusCode: 200,
-    headers: {},
-    body: JSON.stringify({ email: userObj.email, linksCreated: resultArray }),
-  };
+  return createResponse(200, {
+    email: userObj.email,
+    linksCreated: resultArray,
+  });
 };

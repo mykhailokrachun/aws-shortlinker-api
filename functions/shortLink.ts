@@ -28,19 +28,19 @@ module.exports.handler = async function (event) {
         email: result.createdBy,
         message: `Link with ID ${event.pathParameters.urlId} has been deactivated`,
       }),
-      QueueUrl: process.env.SQS_QUEUE_URL,
+      QueueUrl: `https://sqs.us-east-1.amazonaws.com/${process.env.ACCOUNT_ID}/shortlinker-queue`,
     };
     await sqs.send(new SendMessageCommand(queueParams));
     const deleteParams = {
       TableName: 'links-table',
-      Key: marshall({ pk: event.pathParameters.urlId, sk: 'Link' }),
+      Key: marshall({ pk: event.pathParameters.urlId }),
     };
     await db.send(new DeleteItemCommand(deleteParams));
   } else {
     // increase the number of visits
     const updateParams = {
       TableName: 'links-table',
-      Key: marshall({ pk: event.pathParameters.urlId, sk: 'Link' }),
+      Key: marshall({ pk: event.pathParameters.urlId }),
       UpdateExpression: 'set timesVisited = :value',
       ExpressionAttributeValues: marshall({
         ':value': result.timesVisited + 1,

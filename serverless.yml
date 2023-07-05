@@ -2,6 +2,20 @@ service: sls-test-task-api
 
 custom:
   secrets: ${file(secrets.json)}
+  scripts:
+    hooks:
+      'after:deploy:finalize': node --experimental-modules verifyEmail.mjs
+  esbuild:
+    bundle: true
+    minify: false
+    target: 'node18'
+    platform: 'node'
+    concurrency: 10
+  autoswagger:
+    host: 'localhost:3000/dev/'
+    typefiles: ['./lib/api-types.d.ts']
+    apiKeyHeaders: ['Authorization']
+    excludeStages: ['production']
 
 provider:
   name: aws
@@ -10,33 +24,37 @@ provider:
   environment:
     JWT_SECRET: ${self:custom.secrets.JWT_SECRET}
     AWS_ID: ${self:custom.secrets.AWS_ID}
-    SQS_QUEUE_URL: ${self:custom.secrets.SQS_QUEUE_URL}
     EMAIL_FROM: ${self:custom.secrets.EMAIL_FROM}
-    BASE_URL: ${self:custom.secrets.BASE_URL}
+    BASE_URL: !Sub 'https://${ApiGatewayRestApi}.execute-api.us-east-1.amazonaws.com/dev/'
+    ACCOUNT_ID: ${self:custom.secrets.ACCOUNT_ID}
 
 plugins:
   - serverless-iam-roles-per-function
-  - serverless-plugin-typescript
+  - serverless-auto-swagger
   - serverless-offline
+  - serverless-esbuild
 
 functions:
   verify-token:
     handler: functions/authorize.handler
-  ttl-detector:
-    handler: functions/ttlDetector.handler
+  scheduled-deactivate-link:
+    handler: functions/scheduledDeactivateLink.handler
     events:
-      - stream:
-          type: dynamodb
-          arn:
-            Fn::GetAtt:
-              - linksTable
-              - StreamArn
-          batchSize: 10
+      - eventBridge:
+          eventBus: default
+          pattern:
+            source:
+              - 'deactivator'
+            detail-type:
+              - 'scheduled-link-deactivator'
     iamRoleStatements:
       - Effect: Allow
         Action:
           - 'dynamodb:*'
           - 'sqs:*'
+          - 'ses:*'
+          - 'events:*'
+          - 'scheduler:*'
         Resource: '*'
   queue-receiver:
     handler: functions/queueReceiver.handler
@@ -76,6 +94,9 @@ functions:
           path: deactivate/{urlId}
           method: delete
           cors: true
+          responseData:
+            200:
+              bodyType: DeactivateLinkResponse
           authorizer:
             name: verify-token
             identitySource: method.request.header.Authorization
@@ -97,6 +118,13 @@ functions:
           path: create-link
           method: post
           cors: true
+          request:
+            schemas:
+              application/json: ${file(lib/schemas/createLinkSchema.json)}
+          bodyType: CreateLink
+          responseData:
+            201:
+              bodyType: CreateLinkResponse
           authorizer:
             name: verify-token
             identitySource: method.request.header.Authorization
@@ -107,9 +135,12 @@ functions:
           - 'dynamodb:GetItem'
           - 'dynamodb:PutItem'
           - 'dynamodb:UpdateItem'
-        Resource:
-          - !GetAtt usersTable.Arn
-          - !GetAtt linksTable.Arn
+          - 'events:*'
+          - 'scheduler:*'
+          - 'sts:*'
+          - 'iam:*'
+          - 'lambda:*'
+        Resource: '*'
   me:
     handler: functions/me.handler
     events:
@@ -117,6 +148,9 @@ functions:
           path: me
           method: get
           cors: true
+          responseData:
+            200:
+              bodyType: MeResponse
           authorizer:
             name: verify-token
             identitySource: method.request.header.Authorization
@@ -135,6 +169,13 @@ functions:
           path: login
           method: post
           cors: true
+          request:
+            schemas:
+              application/json: ${file(lib/schemas/loginSchema.json)}
+          bodyType: User
+          responseData:
+            200:
+              bodyType: LoginResponse
     iamRoleStatements:
       - Effect: Allow
         Action:
@@ -150,6 +191,13 @@ functions:
           path: register
           method: post
           cors: true
+          request:
+            schemas:
+              application/json: ${file(lib/schemas/registerSchema.json)}
+          bodyType: User
+          responseData:
+            200:
+              bodyType: RegisterResponse
     iamRoleStatements:
       - Effect: Allow
         Action:
@@ -160,6 +208,41 @@ functions:
           - !GetAtt linksTable.Arn
 resources:
   Resources:
+    EventBridgerRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: event-bridger-role
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - lambda.amazonaws.com
+                  - events.amazonaws.com
+                  - scheduler.amazonaws.com
+              Action:
+                - sts:AssumeRole
+        Policies:
+          - PolicyName: LambdaInvokeAccess
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - lambda:InvokeFunction
+                  Resource: '*'
+    ShortlinkerEvent:
+      Type: AWS::Events::Rule
+      Properties:
+        EventPattern:
+          source:
+            - 'deactivator'
+          detail-type:
+            - 'scheduled-link-deactivator'
+        Targets:
+          - Arn: arn:aws:lambda:us-east-1:${self:provider.environment.ACCOUNT_ID}:function:scheduled-deactivate-link
+            Id: 'DeactivateTarget'
     ShortlinkerQueue:
       Type: AWS::SQS::Queue
       Properties:
@@ -176,13 +259,9 @@ resources:
         AttributeDefinitions:
           - AttributeName: pk
             AttributeType: S
-          - AttributeName: sk
-            AttributeType: S
         KeySchema:
           - AttributeName: pk
             KeyType: HASH
-          - AttributeName: sk
-            KeyType: RANGE
     linksTable:
       Type: AWS::DynamoDB::GlobalTable
       Properties:
@@ -195,13 +274,6 @@ resources:
         AttributeDefinitions:
           - AttributeName: pk
             AttributeType: S
-          - AttributeName: sk
-            AttributeType: S
         KeySchema:
           - AttributeName: pk
             KeyType: HASH
-          - AttributeName: sk
-            KeyType: RANGE
-        TimeToLiveSpecification:
-          AttributeName: ttl
-          Enabled: true
